@@ -7,6 +7,13 @@
 error_reporting(0);
 $ip = "";
 header('Content-Type: application/json; charset=utf-8');
+if(isset($_GET["cors"])){
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Methods: GET, POST');
+}
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0, s-maxage=0');
+header('Cache-Control: post-check=0, pre-check=0', false);
+header('Pragma: no-cache');
 if (!empty($_SERVER['HTTP_CLIENT_IP'])) {
     $ip = $_SERVER['HTTP_CLIENT_IP'];
 } elseif (!empty($_SERVER['X-Real-IP'])) {
@@ -20,12 +27,32 @@ if (!empty($_SERVER['HTTP_CLIENT_IP'])) {
 
 $ip = preg_replace("/^::ffff:/", "", $ip);
 
-if (strpos($ip, '::1') !== false) {
-    echo json_encode(['processedString' => $ip . " - localhost ipv6 access", 'rawIspInfo' => ""]);
+if ($ip == "::1") { // ::1/128 is the only localhost ipv6 address. there are no others, no need to strpos this
+    echo json_encode(['processedString' => $ip . " - localhost IPv6 access", 'rawIspInfo' => ""]);
     die();
 }
-if (strpos($ip, '127.0.0') !== false) {
-    echo json_encode(['processedString' => $ip . " - localhost ipv4 access", 'rawIspInfo' => ""]);
+if (stripos($ip, 'fe80:') === 0) { // simplified IPv6 link-local address (should match fe80::/10)
+    echo json_encode(['processedString' => $ip . " - link-local IPv6 access", 'rawIspInfo' => ""]);
+    die();
+}
+if (strpos($ip, '127.') === 0) { //anything within the 127/8 range is localhost ipv4, the ip must start with 127.0
+    echo json_encode(['processedString' => $ip . " - localhost IPv4 access", 'rawIspInfo' => ""]);
+    die();
+}
+if (strpos($ip, '10.') === 0) { // 10/8 private IPv4
+    echo json_encode(['processedString' => $ip . " - private IPv4 access", 'rawIspInfo' => ""]);
+    die();
+}
+if (preg_match('/^172\.(1[6-9]|2\d|3[01])\./', $ip) === 1) { // 172.16/12 private IPv4
+    echo json_encode(['processedString' => $ip . " - private IPv4 access", 'rawIspInfo' => ""]);
+    die();
+}
+if (strpos($ip, '192.168.') === 0) { // 192.168/16 private IPv4
+    echo json_encode(['processedString' => $ip . " - private IPv4 access", 'rawIspInfo' => ""]);
+    die();
+}
+if (strpos($ip, '169.254.') === 0) { // IPv4 link-local
+    echo json_encode(['processedString' => $ip . " - link-local IPv4 access", 'rawIspInfo' => ""]);
     die();
 }
 
@@ -45,30 +72,55 @@ function distance($latitudeFrom, $longitudeFrom, $latitudeTo, $longitudeTo) {
     $dist = sin($latitudeFrom * $rad) * sin($latitudeTo * $rad) + cos($latitudeFrom * $rad) * cos($latitudeTo * $rad) * cos($theta * $rad);
     return acos($dist) / $rad * 60 * 1.853;
 }
-
+function getIpInfoTokenString(){
+	$apikeyFile="getIP_ipInfo_apikey.php";
+	if(!file_exists($apikeyFile)) return "";
+	require $apikeyFile;
+	if(empty($IPINFO_APIKEY)) return "";
+	return "?token=".$IPINFO_APIKEY;
+}
 if (isset($_GET["isp"])) {
     $isp = "";
 	$rawIspInfo=null;
     try {
-        $json = file_get_contents("https://ipinfo.io/" . $ip . "/json");
+        $json = file_get_contents("https://ipinfo.io/" . $ip . "/json".getIpInfoTokenString());
         $details = json_decode($json, true);
 		$rawIspInfo=$details;
-        if (array_key_exists("org", $details))
+        if (array_key_exists("org", $details)){
             $isp .= $details["org"];
-        else
+			$isp=preg_replace("/AS\d{1,}\s/","",$isp); //Remove AS##### from ISP name, if present
+		}else{
             $isp .= "Unknown ISP";
-        if (array_key_exists("country", $details))
-            $isp .= ", " . $details["country"];
+		}
+		if (array_key_exists("country", $details)){
+			$isp .= ", " . $details["country"];
+		}
         $clientLoc = NULL;
         $serverLoc = NULL;
-        if (array_key_exists("loc", $details))
+        if (array_key_exists("loc", $details)){
             $clientLoc = $details["loc"];
+		}
         if (isset($_GET["distance"])) {
             if ($clientLoc) {
-                $json = file_get_contents("https://ipinfo.io/json");
-                $details = json_decode($json, true);
-                if (array_key_exists("loc", $details))
-                    $serverLoc = $details["loc"];
+				$locFile="getIP_serverLocation.php";
+				$serverLoc=null;
+				if(file_exists($locFile)){
+					require $locFile;
+				}else{
+					$json = file_get_contents("https://ipinfo.io/json".getIpInfoTokenString());
+					$details = json_decode($json, true);
+					if (array_key_exists("loc", $details)){
+						$serverLoc = $details["loc"];
+					}
+					if($serverLoc){
+						$lf=fopen($locFile,"w");
+						fwrite($lf,chr(60)."?php\n");
+						fwrite($lf,'$serverLoc="'.addslashes($serverLoc).'";');
+						fwrite($lf,"\n");
+						fwrite($lf,"?".chr(62));
+						fclose($lf);
+					}
+				}
                 if ($serverLoc) {
                     try {
                         $clientLoc = explode(",", $clientLoc);
